@@ -181,10 +181,12 @@ impl FirebaseAuth {
         Ok((keys, expiry))
     }
 
-    pub async fn verify_token(&self, token: &str) -> FirebaseAuthResult<FirebaseAuthUser> {
+    pub async fn verify_token<T>(&self, token: &str) -> FirebaseAuthResult<FirebaseAuthUser>
+    where
+        T: TokenVerifier + serde::de::DeserializeOwned,
+    {
         // Decode header without verification
-        let header =
-            decode_header(token).map_err(|e| FirebaseAuthError::JwtError(e.to_string()))?;
+        let header = decode_header(token).map_err(|e| FirebaseAuthError::JwtError(e.to_string()))?;
 
         // Verify algorithm
         if header.alg != Algorithm::RS256 {
@@ -227,7 +229,7 @@ impl FirebaseAuth {
         validation.set_required_spec_claims(&["sub"]);
 
         // Decode and verify token
-        let token_data = decode::<FirebaseTokenPayload>(
+        let token_data = decode::<T>(
             token,
             &DecodingKey::from_rsa_pem(public_key.as_bytes())
                 .map_err(|e| FirebaseAuthError::JwtError(e.to_string()))?,

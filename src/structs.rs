@@ -69,6 +69,30 @@ pub struct FirebaseAuthUser {
     pub auth_time: OffsetDateTime,
 }
 
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct FirebaseGoogleTokenPayload {
+    pub name: Option<String>,
+    pub picture: Option<String>,
+    pub iss: Option<String>,
+    pub aud: Option<String>,
+    pub auth_time: Option<u64>,
+    pub user_id: Option<String>,
+    pub sub: Option<String>,
+    pub iat: Option<u64>,
+    pub exp: Option<u64>,
+    pub email: Option<String>,
+    pub email_verified: Option<bool>,
+    pub firebase: Option<FirebaseGoogleUserData>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct FirebaseGoogleUserData {
+    pub identities: Option<HashMap<String, Vec<String>>>,
+    pub sign_in_provider: Option<String>,
+}
+
+
 /// Main struct for Firebase Authentication operations
 #[derive(Debug)]
 pub struct FirebaseAuth {
@@ -118,3 +142,121 @@ impl Error for FirebaseAuthError {
 
 // Type alias for Result with FirebaseAuthError
 pub type FirebaseAuthResult<T> = Result<T, FirebaseAuthError>;
+
+/// Trait for token verification
+pub trait TokenVerifier {
+    fn verify(&self, project_id: &str, current_time: OffsetDateTime) -> FirebaseAuthResult<()>;
+    fn to_auth_user(&self) -> FirebaseAuthUser;
+}
+
+impl TokenVerifier for FirebaseTokenPayload {
+    fn verify(&self, project_id: &str, current_time: OffsetDateTime) -> FirebaseAuthResult<()> {
+        // Verify expiration time
+        if self.exp <= current_time.unix_timestamp() {
+            return Err(FirebaseAuthError::TokenExpired);
+        }
+
+        // Verify issued at time
+        if self.iat >= current_time.unix_timestamp() {
+            return Err(FirebaseAuthError::InvalidTokenFormat);
+        }
+
+        // Verify authentication time
+        if self.auth_time >= current_time.unix_timestamp() {
+            return Err(FirebaseAuthError::InvalidAuthTime);
+        }
+
+        // Verify audience
+        if self.aud != project_id {
+            return Err(FirebaseAuthError::InvalidAudience);
+        }
+
+        // Verify issuer
+        let expected_issuer = format!("https://securetoken.google.com/{}", project_id);
+        if self.iss != expected_issuer {
+            return Err(FirebaseAuthError::InvalidIssuer);
+        }
+
+        // Verify subject
+        if self.sub.is_empty() {
+            return Err(FirebaseAuthError::InvalidSubject);
+        }
+
+        Ok(())
+    }
+
+    fn to_auth_user(&self) -> FirebaseAuthUser {
+        FirebaseAuthUser {
+            uid: self.sub.clone(),
+            issued_at: OffsetDateTime::from_unix_timestamp(self.iat)
+                .unwrap_or_else(|_| OffsetDateTime::now_utc()),
+            expires_at: OffsetDateTime::from_unix_timestamp(self.exp)
+                .unwrap_or_else(|_| OffsetDateTime::now_utc()),
+            auth_time: OffsetDateTime::from_unix_timestamp(self.auth_time)
+                .unwrap_or_else(|_| OffsetDateTime::now_utc()),
+        }
+    }
+}
+
+impl TokenVerifier for FirebaseGoogleTokenPayload {
+    fn verify(&self, project_id: &str, current_time: OffsetDateTime) -> FirebaseAuthResult<()> {
+        // Verify expiration time
+        if let Some(exp) = self.exp {
+            if (exp as i64) <= current_time.unix_timestamp() {
+                return Err(FirebaseAuthError::TokenExpired);
+            }
+        }
+
+        // Verify issued at time
+        if let Some(iat) = self.iat {
+            if (iat as i64) >= current_time.unix_timestamp() {
+                return Err(FirebaseAuthError::InvalidTokenFormat);
+            }
+        }
+
+        // Verify authentication time
+        if let Some(auth_time) = self.auth_time {
+            if (auth_time as i64) >= current_time.unix_timestamp() {
+                return Err(FirebaseAuthError::InvalidAuthTime);
+            }
+        }
+
+        // Verify audience
+        if let Some(aud) = &self.aud {
+            if aud != project_id {
+                return Err(FirebaseAuthError::InvalidAudience);
+            }
+        }
+
+        // Verify issuer
+        if let Some(iss) = &self.iss {
+            let expected_issuer = format!("https://securetoken.google.com/{}", project_id);
+            if iss != &expected_issuer {
+                return Err(FirebaseAuthError::InvalidIssuer);
+            }
+        }
+
+        // Verify subject
+        if let Some(sub) = &self.sub {
+            if sub.is_empty() {
+                return Err(FirebaseAuthError::InvalidSubject);
+            }
+        } else {
+            return Err(FirebaseAuthError::InvalidSubject);
+        }
+
+        Ok(())
+    }
+
+    fn to_auth_user(&self) -> FirebaseAuthUser {
+        FirebaseAuthUser {
+            uid: self.sub.clone().unwrap_or_default(),
+            issued_at: OffsetDateTime::from_unix_timestamp(self.iat.unwrap_or(0) as i64)
+                .unwrap_or_else(|_| OffsetDateTime::now_utc()),
+            expires_at: OffsetDateTime::from_unix_timestamp(self.exp.unwrap_or(0) as i64)
+                .unwrap_or_else(|_| OffsetDateTime::now_utc()),
+            auth_time: OffsetDateTime::from_unix_timestamp(self.auth_time.unwrap_or(0) as i64)
+                .unwrap_or_else(|_| OffsetDateTime::now_utc()),
+        }
+    }
+}

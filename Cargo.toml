@@ -1,6 +1,6 @@
 [package]
 name = "fire-auth-token"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 authors = ["Ajay Kumar <iajkumar1205@gmail.com>"]
 description = "Firebase Auth Token Verification Crate"

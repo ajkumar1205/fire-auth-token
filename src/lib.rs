@@ -240,3 +240,45 @@ impl FirebaseAuth {
         Ok(token_data.claims.to_auth_user())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_public_key_fetch() {
+        println!("Starting public key fetch test");
+        
+        let auth = FirebaseAuth::new("oyetime-test".to_string()).await;
+        let client = reqwest::Client::new();
+        
+        println!("Making request to fetch public keys...");
+        match FirebaseAuth::fetch_public_keys(&auth.config, &client).await {
+            Ok((keys, expiry)) => {
+                println!("✅ Successfully fetched public keys:");
+                println!("Keys: {:#?}", keys);
+                println!("Expiry: {}", expiry);
+                assert!(!keys.keys.is_empty(), "Keys should not be empty");
+            }
+            Err(e) => {
+                println!("❌ Failed to fetch public keys:");
+                println!("Error: {:?}", e);
+                panic!("Public key fetch failed");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_key_refresh() {
+        println!("Starting key refresh test");
+        
+        let auth = FirebaseAuth::new("test-project".to_string()).await;
+        println!("Initial cached keys: {:#?}", auth.cached_public_keys.read().await);
+        
+        auth.update_public_keys().await.expect("Key refresh failed");
+        
+        let cached = auth.cached_public_keys.read().await;
+        println!("Updated cached keys: {:#?}", cached);
+        assert!(cached.is_some(), "Cached keys should be present after refresh");
+    }
+}

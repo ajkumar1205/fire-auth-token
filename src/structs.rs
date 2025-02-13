@@ -43,7 +43,7 @@ pub struct FirebaseTokenPayload {
 /// Response from Google's public key endpoint
 #[derive(Debug, Deserialize, Clone)]
 pub struct PublicKeysResponse {
-    /// Map of key IDs to their corresponding public key certificates
+    #[serde(flatten)]
     pub keys: HashMap<String, String>,
 }
 

@@ -133,12 +133,12 @@ impl FirebaseAuth {
     }
 
     async fn update_public_keys(&self) -> FirebaseAuthResult<()> {
+        println!("Updating public keys...");
         let client = reqwest::Client::new();
         let (keys, expiry) = Self::fetch_public_keys(&self.config, &client).await?;
-
         let mut cached = self.cached_public_keys.write().await;
         *cached = Some(SharedState { keys, expiry });
-
+        println!("Public keys updated successfully with expiry: {}", expiry);
         Ok(())
     }
 
@@ -146,18 +146,21 @@ impl FirebaseAuth {
         config: &FirebaseAuthConfig,
         client: &reqwest::Client,
     ) -> FirebaseAuthResult<(PublicKeysResponse, OffsetDateTime)> {
+        println!("Fetching public keys from URL: {}", config.public_keys_url);
         let response = client
             .get(&config.public_keys_url)
             .send()
             .await
             .map_err(|e| FirebaseAuthError::HttpError(e.to_string()))?;
 
+        println!("Received response with status: {}", response.status());
         // Get cache control header
         let cache_control = response
             .headers()
             .get("Cache-Control")
             .and_then(|h| h.to_str().ok())
             .unwrap_or("max-age=3600");
+        println!("Cache-Control header value: {}", cache_control);
 
         // Parse max age
         let max_age = cache_control
@@ -197,7 +200,7 @@ impl FirebaseAuth {
             .as_ref()
             .ok_or(FirebaseAuthError::InvalidTokenFormat)?;
 
-        // Find matching key
+        // Find matching key using the updated structure
         let public_key = state
             .keys
             .keys
@@ -248,10 +251,10 @@ mod tests {
     #[tokio::test]
     async fn test_public_key_fetch() {
         println!("Starting public key fetch test");
-        
+
         let auth = FirebaseAuth::new("oyetime-test".to_string()).await;
         let client = reqwest::Client::new();
-        
+
         println!("Making request to fetch public keys...");
         match FirebaseAuth::fetch_public_keys(&auth.config, &client).await {
             Ok((keys, expiry)) => {
@@ -271,14 +274,20 @@ mod tests {
     #[tokio::test]
     async fn test_key_refresh() {
         println!("Starting key refresh test");
-        
+
         let auth = FirebaseAuth::new("test-project".to_string()).await;
-        println!("Initial cached keys: {:#?}", auth.cached_public_keys.read().await);
-        
+        println!(
+            "Initial cached keys: {:#?}",
+            auth.cached_public_keys.read().await
+        );
+
         auth.update_public_keys().await.expect("Key refresh failed");
-        
+
         let cached = auth.cached_public_keys.read().await;
         println!("Updated cached keys: {:#?}", cached);
-        assert!(cached.is_some(), "Cached keys should be present after refresh");
+        assert!(
+            cached.is_some(),
+            "Cached keys should be present after refresh"
+        );
     }
 }

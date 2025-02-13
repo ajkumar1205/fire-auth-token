@@ -11,8 +11,11 @@ A Rust library for verifying Firebase ID tokens. It handles token validation, pu
 Add the package with Cargo:
 ```toml
 [dependencies]
-fire-auth-token = "0.1.0"
+fire-auth-token = "0.1.1"
 ```
+Or run 
+
+`cargo add fire-auth-token`
 
 ```
 use fire_auth_token::FirebaseAuth;

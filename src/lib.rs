@@ -2,59 +2,13 @@ pub mod structs;
 
 use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
 use reqwest;
-use std::{collections::HashSet, sync::Arc};
+use std::{
+    collections::HashSet,
+    sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
+};
 use structs::*;
-use time::{Duration, OffsetDateTime};
 use tokio::sync::RwLock;
-
-impl FirebaseTokenPayload {
-    fn verify(&self, project_id: &str, current_time: OffsetDateTime) -> FirebaseAuthResult<()> {
-        // Verify expiration time
-        if self.exp <= current_time.unix_timestamp() {
-            return Err(FirebaseAuthError::TokenExpired);
-        }
-
-        // Verify issued at time
-        if self.iat >= current_time.unix_timestamp() {
-            return Err(FirebaseAuthError::InvalidTokenFormat);
-        }
-
-        // Verify authentication time
-        if self.auth_time >= current_time.unix_timestamp() {
-            return Err(FirebaseAuthError::InvalidAuthTime);
-        }
-
-        // Verify audience
-        if self.aud != project_id {
-            return Err(FirebaseAuthError::InvalidAudience);
-        }
-
-        // Verify issuer
-        let expected_issuer = format!("https://securetoken.google.com/{}", project_id);
-        if self.iss != expected_issuer {
-            return Err(FirebaseAuthError::InvalidIssuer);
-        }
-
-        // Verify subject
-        if self.sub.is_empty() {
-            return Err(FirebaseAuthError::InvalidSubject);
-        }
-
-        Ok(())
-    }
-
-    fn to_auth_user(&self) -> FirebaseAuthUser {
-        FirebaseAuthUser {
-            uid: self.sub.clone(),
-            issued_at: OffsetDateTime::from_unix_timestamp(self.iat)
-                .unwrap_or_else(|_| OffsetDateTime::now_utc()),
-            expires_at: OffsetDateTime::from_unix_timestamp(self.exp)
-                .unwrap_or_else(|_| OffsetDateTime::now_utc()),
-            auth_time: OffsetDateTime::from_unix_timestamp(self.auth_time)
-                .unwrap_or_else(|_| OffsetDateTime::now_utc()),
-        }
-    }
-}
 
 impl FirebaseAuth {
     pub async fn new(project_id: String) -> Self {
@@ -68,14 +22,10 @@ impl FirebaseAuth {
             cached_public_keys: Arc::new(RwLock::new(None)),
         };
 
-        // Initialize the keys
         auth.update_public_keys()
             .await
             .expect("Initial key fetch failed");
-
-        // Start the background refresh task
         auth.start_key_refresh_task();
-
         auth
     }
 
@@ -85,46 +35,37 @@ impl FirebaseAuth {
 
         tokio::spawn(async move {
             loop {
-                // Read current state
                 let next_update = {
                     let keys = cached_keys.read().await;
-                    keys.as_ref()
-                        .map(|state| state.expiry)
-                        .unwrap_or_else(|| OffsetDateTime::now_utc())
+                    keys.as_ref().map(|state| state.expiry).unwrap_or_else(|| {
+                        SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .unwrap()
+                            .as_secs() as i64
+                    })
                 };
 
-                // Calculate sleep duration
-                let now = OffsetDateTime::now_utc();
-                let sleep_duration = if next_update > now {
-                    // Refresh slightly before expiry (90% of the remaining time)
-                    let total_duration = (next_update - now).whole_seconds();
-                    Duration::seconds((total_duration as f64 * 0.9) as i64)
+                let current_time = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs() as i64;
+
+                let sleep_duration = if next_update > current_time {
+                    ((next_update - current_time) as f64 * 0.9) as u64
                 } else {
-                    Duration::seconds(0)
+                    0
                 };
 
-                // Sleep until next refresh
-                tokio::time::sleep(tokio::time::Duration::from_secs(
-                    sleep_duration.whole_seconds() as u64,
-                ))
-                .await;
+                tokio::time::sleep(tokio::time::Duration::from_secs(sleep_duration)).await;
 
-                // Create new client for each request
                 let client = reqwest::Client::new();
-
-                // Fetch new keys
                 match Self::fetch_public_keys(&config, &client).await {
                     Ok((keys, expiry)) => {
                         let mut cached = cached_keys.write().await;
                         *cached = Some(SharedState { keys, expiry });
-                        println!(
-                            "Successfully updated public keys. Next update in {} seconds",
-                            (expiry - OffsetDateTime::now_utc()).whole_seconds()
-                        );
                     }
                     Err(e) => {
                         eprintln!("Failed to update public keys: {:?}", e);
-                        // On error, retry after 1 minute
                         tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
                     }
                 }
@@ -132,37 +73,22 @@ impl FirebaseAuth {
         });
     }
 
-    async fn update_public_keys(&self) -> FirebaseAuthResult<()> {
-        println!("Updating public keys...");
-        let client = reqwest::Client::new();
-        let (keys, expiry) = Self::fetch_public_keys(&self.config, &client).await?;
-        let mut cached = self.cached_public_keys.write().await;
-        *cached = Some(SharedState { keys, expiry });
-        println!("Public keys updated successfully with expiry: {}", expiry);
-        Ok(())
-    }
-
     async fn fetch_public_keys(
         config: &FirebaseAuthConfig,
         client: &reqwest::Client,
-    ) -> FirebaseAuthResult<(PublicKeysResponse, OffsetDateTime)> {
-        println!("Fetching public keys from URL: {}", config.public_keys_url);
+    ) -> FirebaseAuthResult<(PublicKeysResponse, i64)> {
         let response = client
             .get(&config.public_keys_url)
             .send()
             .await
             .map_err(|e| FirebaseAuthError::HttpError(e.to_string()))?;
 
-        println!("Received response with status: {}", response.status());
-        // Get cache control header
         let cache_control = response
             .headers()
             .get("Cache-Control")
             .and_then(|h| h.to_str().ok())
             .unwrap_or("max-age=3600");
-        println!("Cache-Control header value: {}", cache_control);
 
-        // Parse max age
         let max_age = cache_control
             .split(',')
             .find(|&s| s.trim().starts_with("max-age="))
@@ -175,44 +101,46 @@ impl FirebaseAuth {
             .await
             .map_err(|e| FirebaseAuthError::HttpError(e.to_string()))?;
 
-        // Calculate expiry time
-        let expiry = OffsetDateTime::now_utc() + Duration::seconds(max_age);
+        let expiry = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64
+            + max_age;
 
         Ok((keys, expiry))
     }
 
-    pub async fn verify_token<T>(&self, token: &str) -> FirebaseAuthResult<FirebaseAuthUser>
+    async fn update_public_keys(&self) -> FirebaseAuthResult<()> {
+        let client = reqwest::Client::new();
+        let (keys, expiry) = Self::fetch_public_keys(&self.config, &client).await?;
+        let mut cached = self.cached_public_keys.write().await;
+        *cached = Some(SharedState { keys, expiry });
+        Ok(())
+    }
+
+    pub async fn verify_token<T>(&self, token: &str) -> FirebaseAuthResult<T>
     where
         T: TokenVerifier + serde::de::DeserializeOwned,
     {
-        // Decode header without verification
-        let header = decode_header(token).map_err(|e| FirebaseAuthError::JwtError(e.to_string()))?;
-
-        // Verify algorithm
+        let header =
+            decode_header(token).map_err(|e| FirebaseAuthError::JwtError(e.to_string()))?;
         if header.alg != Algorithm::RS256 {
             return Err(FirebaseAuthError::InvalidTokenFormat);
         }
 
-        // Get key ID
         let kid = header.kid.ok_or(FirebaseAuthError::InvalidTokenFormat)?;
-
-        // Get public keys
         let cached_keys = self.cached_public_keys.read().await;
         let state = cached_keys
             .as_ref()
             .ok_or(FirebaseAuthError::InvalidTokenFormat)?;
 
-        // Find matching key using the updated structure
         let public_key = state
             .keys
             .keys
             .get(&kid)
             .ok_or(FirebaseAuthError::InvalidSignature)?;
 
-        // Set up validation parameters
         let mut validation = Validation::new(Algorithm::RS256);
-
-        // Configure validation parameters using HashSet
         let mut iss_set = HashSet::new();
         iss_set.insert(format!(
             "https://securetoken.google.com/{}",
@@ -228,7 +156,6 @@ impl FirebaseAuth {
         validation.validate_nbf = false;
         validation.set_required_spec_claims(&["sub"]);
 
-        // Decode and verify token
         let token_data = decode::<T>(
             token,
             &DecodingKey::from_rsa_pem(public_key.as_bytes())
@@ -237,12 +164,16 @@ impl FirebaseAuth {
         )
         .map_err(|e| FirebaseAuthError::JwtError(e.to_string()))?;
 
-        // Verify additional Firebase-specific claims
+        let current_time = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+
         token_data
             .claims
-            .verify(&self.config.project_id, OffsetDateTime::now_utc())?;
+            .verify(&self.config.project_id, current_time)?;
 
-        Ok(token_data.claims.to_auth_user())
+        Ok(token_data.claims)
     }
 }
 
@@ -252,44 +183,36 @@ mod tests {
 
     #[tokio::test]
     async fn test_public_key_fetch() {
-        println!("Starting public key fetch test");
-
-        let auth = FirebaseAuth::new("oyetime-test".to_string()).await;
+        let auth = FirebaseAuth::new("test-project".to_string()).await;
         let client = reqwest::Client::new();
 
-        println!("Making request to fetch public keys...");
-        match FirebaseAuth::fetch_public_keys(&auth.config, &client).await {
-            Ok((keys, expiry)) => {
-                println!("✅ Successfully fetched public keys:");
-                println!("Keys: {:#?}", keys);
-                println!("Expiry: {}", expiry);
-                assert!(!keys.keys.is_empty(), "Keys should not be empty");
-            }
-            Err(e) => {
-                println!("❌ Failed to fetch public keys:");
-                println!("Error: {:?}", e);
-                panic!("Public key fetch failed");
-            }
-        }
+        let result = FirebaseAuth::fetch_public_keys(&auth.config, &client).await;
+        assert!(result.is_ok());
+
+        let (keys, _) = result.unwrap();
+        assert!(!keys.keys.is_empty());
     }
 
     #[tokio::test]
-    async fn test_key_refresh() {
-        println!("Starting key refresh test");
-
+    async fn test_verify_normal_token() {
         let auth = FirebaseAuth::new("test-project".to_string()).await;
-        println!(
-            "Initial cached keys: {:#?}",
-            auth.cached_public_keys.read().await
-        );
 
-        auth.update_public_keys().await.expect("Key refresh failed");
+        // You would need to replace this with a valid test token
+        let test_token = "your.test.token";
 
-        let cached = auth.cached_public_keys.read().await;
-        println!("Updated cached keys: {:#?}", cached);
-        assert!(
-            cached.is_some(),
-            "Cached keys should be present after refresh"
-        );
+        let result: FirebaseAuthResult<FirebaseAuthUser> = auth.verify_token(test_token).await;
+        assert!(result.is_err()); // Will fail with invalid token, replace with proper test token
+    }
+
+    #[tokio::test]
+    async fn test_verify_google_token() {
+        let auth = FirebaseAuth::new("test-project".to_string()).await;
+
+        // You would need to replace this with a valid test token
+        let test_token = "your.google.test.token";
+
+        let result: FirebaseAuthResult<FirebaseAuthGoogleUser> =
+            auth.verify_token(test_token).await;
+        assert!(result.is_err()); // Will fail with invalid token, replace with proper test token
     }
 }

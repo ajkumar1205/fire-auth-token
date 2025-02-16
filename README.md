@@ -27,9 +27,9 @@ async fn main() {
     let token = "your-firebase-id-token";
     
     // For regular Firebase tokens
-    let user = auth.verify_token::<FirebaseTokenPayload>(token).await?;
+    let user = auth.verify_token::<FirebaseAuthUser>(token).await?;
 
     // For Google Firebase tokens
-    let user = auth.verify_token::<FirebaseGoogleTokenPayload>(token).await?;
+    let user = auth.verify_token::<FirebaseAuthGoogleUser>(token).await?;
 }
 ```
